@@ -1,0 +1,31 @@
+{
+  "indicators": [
+    "RSI",
+    "MACD",
+    "MA"
+  ],
+  "rsi": {
+    "period": 13,
+    "oversoldThreshold": 25,
+    "overboughtThreshold": 60
+  },
+  "macd": {
+    "signalType": "both"
+  },
+  "movingAverages": {
+    "periods": [
+      50,
+      200
+    ],
+    "condition": "ma_cross"
+  },
+  "leverage": {
+    "min": 5,
+    "max": 50
+  },
+  "stopLoss": {
+    "method": "support_zone"
+  },
+  "maxPositionUSDC": 120,
+  "updatedAt": "2026-05-20T23:53:30.189Z"
+}
