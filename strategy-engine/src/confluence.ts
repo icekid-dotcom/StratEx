@@ -2,7 +2,11 @@ import { Candle, ConfluenceResult, ConfluenceCheck, SignalDirection } from "./ty
 import { StrategyProfile } from "./config";
 import { calcRSI, calcMACD, calcMA, calcSupportResistance } from "./indicators";
 
-const MIN_SCORE_TO_FIRE = 0.6; // 60% of checks must pass to fire a proposal
+// Lower threshold: 50% of checks must pass to fire a proposal
+const MIN_SCORE_TO_FIRE = 0.5;
+
+// Minimum directional agreement: at least this many votes must agree on direction
+const MIN_DIRECTIONAL_VOTES = 1;
 
 export function evaluateConfluence(
   candles: Candle[],
@@ -52,10 +56,10 @@ export function evaluateConfluence(
       shortPassed = macd.isBearishHistogram;
       valueDesc = `histogram ${macd.histogram > 0 ? "+" : ""}${macd.histogram}`;
     } else {
-      // both
+      // both — more lenient, either signal counts
       longPassed = macd.isBullishCrossover || macd.isBullishHistogram;
       shortPassed = macd.isBearishCrossover || macd.isBearishHistogram;
-      valueDesc = `crossover: ${macd.isBullishCrossover ? "bull" : macd.isBearishCrossover ? "bear" : "none"}, hist: ${macd.histogram}`;
+      valueDesc = `crossover: ${macd.isBullishCrossover ? "bull" : macd.isBearishCrossover ? "bear" : "none"}, hist: ${macd.histogram > 0 ? "+" : ""}${macd.histogram}`;
     }
 
     checks.push({
@@ -82,7 +86,7 @@ export function evaluateConfluence(
       longPassed = mas.some((ma) => ma.priceAbove);
       shortPassed = mas.some((ma) => !ma.priceAbove);
     } else {
-      // ma_cross — check if shorter MA is above/below longer MA
+      // ma_cross — shorter MA above/below longer MA
       if (mas.length >= 2) {
         const sorted = [...mas].sort((a, b) => a.period - b.period);
         longPassed = sorted[0].value > sorted[1].value;
@@ -128,8 +132,11 @@ export function evaluateConfluence(
   const passedCount = checks.filter((c) => c.passed).length;
   const score = passedCount / total;
 
+  // Determine direction based on which side has more votes
+  const dominantVotes = Math.max(longVotes, shortVotes);
   let direction: SignalDirection = "NONE";
-  if (score >= MIN_SCORE_TO_FIRE) {
+
+  if (score >= MIN_SCORE_TO_FIRE && dominantVotes >= MIN_DIRECTIONAL_VOTES) {
     direction = longVotes >= shortVotes ? "LONG" : "SHORT";
   }
 
@@ -137,7 +144,7 @@ export function evaluateConfluence(
     direction,
     score: passedCount,
     total,
-    passed: score >= MIN_SCORE_TO_FIRE,
+    passed: score >= MIN_SCORE_TO_FIRE && dominantVotes >= MIN_DIRECTIONAL_VOTES,
     checks,
     currentPrice,
   };
