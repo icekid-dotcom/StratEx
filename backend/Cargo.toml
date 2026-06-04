@@ -2,25 +2,15 @@
 name = "stratex-backend"
 version = "0.1.0"
 edition = "2021"
-description = "Stratex Aomi plugin — Avantis perpetuals tools for Base"
 
 [lib]
 name = "stratex_backend"
 crate-type = ["cdylib"]
 
 [dependencies]
-# HTTP client for Avantis API calls
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
-# JSON serialization
+aomi-sdk = "^0.1.21"
+schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Error handling
-anyhow = "1"
-
-# Logging
-tracing = "0.1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
+tokio = { version = "1", features = ["full"] }
