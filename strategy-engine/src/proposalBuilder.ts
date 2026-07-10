@@ -3,7 +3,8 @@ import axios from "axios";
 import { ConfluenceResult, SizedPosition, SimulationResult } from "./types";
 
 const BOT_PORT = process.env.BOT_PROPOSAL_PORT ?? "3001";
-const BOT_URL = `http://localhost:${BOT_PORT}/proposal`;
+const BOT_URL = `http://stratex.railway.internal:${BOT_PORT}/proposal`;
+
 
 export interface TradeProposal {
   id: string;
