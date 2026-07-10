@@ -3,42 +3,29 @@ import { loadProfile, formatProfile, hasProfile } from "./store";
 import { formatProposalCard, proposalKeyboard, formatPositionsList } from "./proposal";
 import { TradeProposal, ActivePosition } from "./types";
 
-// In-memory pending proposals map — keyed by proposal ID
-// In production you'd persist this, but for the hackathon in-memory is fine
 export const pendingProposals = new Map<string, TradeProposal>();
+export const proposalHistory: Array<{ id: string; decision: "approved" | "rejected"; at: string }> = [];
 
-// Approved/rejected proposal audit trail
-export const proposalHistory: Array<{
-  id: string;
-  decision: "approved" | "rejected";
-  at: string;
-}> = [];
-
-// ─── Auth guard ───────────────────────────────────────────────────────────────
-
-export function isAuthorized(ctx: Context): boolean {
-  const authorizedId = parseInt(process.env.AUTHORIZED_USER_ID ?? "0");
-  if (authorizedId === 0) return true; // not set → open (dev mode)
-  return ctx.from?.id === authorizedId;
+// No auth restriction — open to all users
+export function isAuthorized(_ctx: Context): boolean {
+  return true;
 }
-
-// ─── Register all handlers ────────────────────────────────────────────────────
 
 export function registerHandlers(bot: Bot<Context>): void {
 
-  // /start
   bot.command("start", async (ctx) => {
-    if (!isAuthorized(ctx)) return;
+    const userId = ctx.from?.id ?? 0;
+    const hasStrat = hasProfile(userId);
+    const name = ctx.from?.first_name ?? "trader";
 
-    const hasStrat = hasProfile();
     await ctx.reply(
       [
         `⚡ <b>Stratex — Personal Alpha Engine</b>`,
         ``,
-        `Your 24/7 strategy execution agent on Avantis perps.`,
+        `Hey ${name}! Your 24/7 strategy execution agent on Avantis perps.`,
         ``,
         hasStrat
-          ? `Your strategy profile is active. I'm watching the markets.`
+          ? `Your strategy profile is active. I'm watching BTC, ETH, and SOL for setups.`
           : `You haven't set up your strategy yet. Run /setup to onboard your TA method.`,
         ``,
         `<b>Commands</b>`,
@@ -51,10 +38,7 @@ export function registerHandlers(bot: Bot<Context>): void {
     );
   });
 
-  // /help
   bot.command("help", async (ctx) => {
-    if (!isAuthorized(ctx)) return;
-
     await ctx.reply(
       [
         `<b>Stratex Commands</b>`,
@@ -71,63 +55,41 @@ export function registerHandlers(bot: Bot<Context>): void {
     );
   });
 
-  // /strategy
   bot.command("strategy", async (ctx) => {
-    if (!isAuthorized(ctx)) return;
-
-    const profile = loadProfile();
+    const userId = ctx.from?.id ?? 0;
+    const profile = loadProfile(userId);
     if (!profile) {
-      await ctx.reply(
-        `No strategy profile found. Run /setup to create one.`
-      );
+      await ctx.reply(`No strategy profile found. Run /setup to create one.`);
       return;
     }
-
     await ctx.reply(formatProfile(profile), { parse_mode: "HTML" });
   });
 
-  // /positions — calls out to the strategy engine's position endpoint
-  // For the hackathon, returns mock data if the engine isn't running
   bot.command("positions", async (ctx) => {
-    if (!isAuthorized(ctx)) return;
-
     await ctx.reply(`⏳ Fetching your open positions from Avantis...`);
-
     try {
       const positions = await fetchPositions();
       await ctx.reply(formatPositionsList(positions), { parse_mode: "HTML" });
     } catch (err) {
       await ctx.reply(
-        `⚠️ Could not reach the strategy engine. Make sure it's running.\n\n<code>${err}</code>`,
+        `⚠️ Could not reach the strategy engine.\n\n<code>${err}</code>`,
         { parse_mode: "HTML" }
       );
     }
   });
 
-  // ── Callback queries (inline keyboard buttons) ────────────────────────────
-
   // APPROVE trade
   bot.callbackQuery(/^approve:(.+)$/, async (ctx) => {
-    if (!isAuthorized(ctx)) return;
-
     const proposalId = ctx.match[1];
     const proposal = pendingProposals.get(proposalId);
-
     if (!proposal) {
       await ctx.answerCallbackQuery({ text: "This proposal has already been handled." });
       return;
     }
-
-    // Remove from pending
     pendingProposals.delete(proposalId);
     proposalHistory.push({ id: proposalId, decision: "approved", at: new Date().toISOString() });
-
     await ctx.answerCallbackQuery({ text: "✅ Approved — sending to Avantis..." });
-
-    // Notify the strategy engine to execute
     await notifyExecution(proposal, "approved");
-
-    // Edit the message to show approved state
     await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
     await ctx.reply(
       [
@@ -145,19 +107,14 @@ export function registerHandlers(bot: Bot<Context>): void {
 
   // REJECT trade
   bot.callbackQuery(/^reject:(.+)$/, async (ctx) => {
-    if (!isAuthorized(ctx)) return;
-
     const proposalId = ctx.match[1];
     const proposal = pendingProposals.get(proposalId);
-
     if (!proposal) {
       await ctx.answerCallbackQuery({ text: "This proposal has already been handled." });
       return;
     }
-
     pendingProposals.delete(proposalId);
     proposalHistory.push({ id: proposalId, decision: "rejected", at: new Date().toISOString() });
-
     await ctx.answerCallbackQuery({ text: "❌ Rejected." });
     await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
     await ctx.reply(`❌ Trade rejected. Continuing to monitor.`);
@@ -165,28 +122,21 @@ export function registerHandlers(bot: Bot<Context>): void {
 
   // CLOSE position
   bot.callbackQuery(/^close:(.+)$/, async (ctx) => {
-    if (!isAuthorized(ctx)) return;
-
     const positionId = ctx.match[1];
     await ctx.answerCallbackQuery({ text: "Closing position..." });
     await notifyClose(positionId);
-
     await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
     await ctx.reply(
-      `🚪 Close order submitted for position <code>${positionId}</code>.\n\nThe agent will confirm once the tx is settled.`,
+      `🚪 Close order submitted for position <code>${positionId}</code>.`,
       { parse_mode: "HTML" }
     );
   });
 
-  // Dismiss liquidation warning
   bot.callbackQuery(/^dismiss_warning:(.+)$/, async (ctx) => {
-    if (!isAuthorized(ctx)) return;
     await ctx.answerCallbackQuery({ text: "Dismissed." });
     await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
   });
 }
-
-// ─── Send a proposal card to the user ────────────────────────────────────────
 
 export async function sendProposal(
   bot: Bot<Context>,
@@ -194,14 +144,11 @@ export async function sendProposal(
   proposal: TradeProposal
 ): Promise<void> {
   pendingProposals.set(proposal.id, proposal);
-
   await bot.api.sendMessage(chatId, formatProposalCard(proposal), {
     parse_mode: "HTML",
     reply_markup: proposalKeyboard(proposal.id),
   });
 }
-
-// ─── Internal calls to the strategy engine ───────────────────────────────────
 
 const ENGINE_BASE = `http://localhost:${process.env.STRATEGY_ENGINE_PORT ?? "3000"}`;
 
@@ -211,10 +158,7 @@ async function fetchPositions(): Promise<ActivePosition[]> {
   return res.json() as Promise<ActivePosition[]>;
 }
 
-async function notifyExecution(
-  proposal: TradeProposal,
-  decision: "approved" | "rejected"
-): Promise<void> {
+async function notifyExecution(proposal: TradeProposal, decision: "approved" | "rejected"): Promise<void> {
   try {
     await fetch(`${ENGINE_BASE}/execute`, {
       method: "POST",
@@ -222,7 +166,6 @@ async function notifyExecution(
       body: JSON.stringify({ proposalId: proposal.id, decision, proposal }),
     });
   } catch {
-    // Strategy engine might not be running in dev — log and continue
     console.warn(`[bot] Could not notify strategy engine of decision for ${proposal.id}`);
   }
 }

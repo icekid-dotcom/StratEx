@@ -1,36 +1,70 @@
 import fs from "fs";
 import path from "path";
-import { StrategyProfile } from "./types";
 
-const STORE_PATH = process.env.STRATEGY_STORE_PATH ?? "./data/strategy.json";
+export interface StrategyProfile {
+  indicators: string[];
+  rsi: {
+    period: number;
+    oversoldThreshold: number;
+    overboughtThreshold: number;
+  };
+  macd: {
+    signalType: "crossover" | "histogram" | "both";
+  };
+  movingAverages: {
+    periods: number[];
+    condition: "price_above_all" | "price_above_any" | "ma_cross";
+  };
+  leverage: {
+    min: number;
+    max: number;
+  };
+  stopLoss: {
+    method: "support_zone" | "percentage" | "atr";
+    percentage?: number;
+  };
+  maxPositionUSDC: number;
+  updatedAt: string;
+}
 
-function ensureDir(filePath: string): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+// ─── Multi-user store ─────────────────────────────────────────────────────────
+
+const STORE_DIR = process.env.STRATEGY_STORE_PATH ?? "./data/profiles";
+
+function ensureDir(): void {
+  if (!fs.existsSync(STORE_DIR)) {
+    fs.mkdirSync(STORE_DIR, { recursive: true });
   }
 }
 
-export function saveProfile(profile: StrategyProfile): void {
-  ensureDir(STORE_PATH);
-  fs.writeFileSync(STORE_PATH, JSON.stringify(profile, null, 2), "utf-8");
+function profilePath(userId: number): string {
+  return path.join(STORE_DIR, `${userId}.json`);
 }
 
-export function loadProfile(): StrategyProfile | null {
+export function saveProfile(userId: number, profile: StrategyProfile): void {
+  ensureDir();
+  fs.writeFileSync(profilePath(userId), JSON.stringify(profile, null, 2), "utf-8");
+}
+
+export function loadProfile(userId: number): StrategyProfile | null {
   try {
-    if (!fs.existsSync(STORE_PATH)) return null;
-    const raw = fs.readFileSync(STORE_PATH, "utf-8");
-    return JSON.parse(raw) as StrategyProfile;
+    const p = profilePath(userId);
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, "utf-8")) as StrategyProfile;
   } catch {
     return null;
   }
 }
 
-export function hasProfile(): boolean {
-  return loadProfile() !== null;
+export function hasProfile(userId: number): boolean {
+  return loadProfile(userId) !== null;
 }
 
-/** Pretty-prints the strategy profile for display in Telegram */
+export function deleteProfile(userId: number): void {
+  const p = profilePath(userId);
+  if (fs.existsSync(p)) fs.unlinkSync(p);
+}
+
 export function formatProfile(p: StrategyProfile): string {
   const mas = p.movingAverages.periods.map((n) => `${n}MA`).join(", ");
   const slDesc =
