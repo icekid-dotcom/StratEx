@@ -1,5 +1,5 @@
 import { InlineKeyboard } from "grammy";
-import { TradeProposal, ActivePosition } from "./types";
+import { TradeProposal, ActivePosition, TriggeredAlert } from "./types";
 
 // ─── Trade Proposal Card ─────────────────────────────────────────────────────
 
@@ -88,9 +88,22 @@ export function closePositionKeyboard(positionId: string): InlineKeyboard {
     .text("Dismiss", `dismiss_warning:${positionId}`);
 }
 
+// ─── Price Alert Triggered ────────────────────────────────────────────────────
+
+export function formatAlertTriggered(a: TriggeredAlert): string {
+  const arrow = a.direction === "above" ? "📈" : "📉";
+  return [
+    `${arrow} <b>PRICE ALERT — ${a.pair}</b>`,
+    ``,
+    `Price moved ${a.direction} your target of $${fmt(a.targetPrice)}.`,
+    `Current price: <b>$${fmt(a.currentPrice)}</b>`,
+    ``,
+    `<i>Triggered: ${new Date(a.triggeredAt).toUTCString()}</i>`,
+  ].join("\n");
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Format number with commas, 2 decimal places */
 function fmt(n: number): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }

@@ -3,10 +3,33 @@ import { Context } from "grammy";
 import { StrategyProfile } from "./store";
 import { saveProfile, formatProfile } from "./store";
 
+const MAX_LEVERAGE = 100; // matches the Rust backend's hard cap in lib.rs / tools.rs
+const MIN_LEVERAGE = 1;
+const MIN_STOP_LOSS_PCT = 0.1;  // anything tighter is basically a market order
+const MAX_STOP_LOSS_PCT = 20;   // anything wider isn't really a "stop"
+
 async function ask(conversation: Conversation<Context>, ctx: Context, question: string): Promise<string> {
   await ctx.reply(question, { parse_mode: "HTML" });
   const reply = await conversation.waitFor("message:text");
   return reply.message.text.trim();
+}
+
+/** Repeatedly asks until the reply parses to a number within [min, max]. */
+async function askNumberInRange(
+  conversation: Conversation<Context>,
+  ctx: Context,
+  question: string,
+  min: number,
+  max: number,
+  fallback: number
+): Promise<number> {
+  while (true) {
+    const raw = await ask(conversation, ctx, question);
+    if (raw === "") return fallback;
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= min && n <= max) return n;
+    await ctx.reply(`⚠️ Please enter a number between <b>${min}</b> and <b>${max}</b> (or leave blank for default: ${fallback}).`, { parse_mode: "HTML" });
+  }
 }
 
 async function askWithOptions(conversation: Conversation<Context>, ctx: Context, question: string, options: string[]): Promise<string> {
@@ -47,9 +70,9 @@ export async function onboardingConversation(conversation: Conversation<Context>
   // Step 2: RSI
   let rsiPeriod = 14, rsiOversold = 30, rsiOverbought = 70;
   if (indicators.includes("RSI")) {
-    rsiPeriod = parseInt(await ask(conversation, ctx, `<b>Step 2/7</b> — RSI period? (default: <b>14</b>)`)) || 14;
-    rsiOversold = parseInt(await ask(conversation, ctx, `Oversold threshold for <b>long entries</b>? (default: <b>30</b>)`)) || 30;
-    rsiOverbought = parseInt(await ask(conversation, ctx, `Overbought threshold for <b>short entries</b>? (default: <b>70</b>)`)) || 70;
+    rsiPeriod = await askNumberInRange(conversation, ctx, `<b>Step 2/7</b> — RSI period? (default: <b>14</b>)`, 2, 100, 14);
+    rsiOversold = await askNumberInRange(conversation, ctx, `Oversold threshold for <b>long entries</b>? (default: <b>30</b>)`, 1, 49, 30);
+    rsiOverbought = await askNumberInRange(conversation, ctx, `Overbought threshold for <b>short entries</b>? (default: <b>70</b>)`, 51, 99, 70);
   }
 
   // Step 3: MACD
@@ -70,16 +93,27 @@ export async function onboardingConversation(conversation: Conversation<Context>
     maCondition = cond as typeof maCondition;
   }
 
-  // Step 5: Leverage
-  const leverageRaw = await ask(conversation, ctx, `<b>Step 5/7</b> — Leverage range? (e.g. <code>3-5</code> or <code>4</code>)`);
+  // Step 5: Leverage — clamped to 1–100x to match the Rust backend's hard limit
   let leverageMin = 3, leverageMax = 5;
-  if (leverageRaw.includes("-")) {
-    const parts = leverageRaw.split("-").map((s) => parseInt(s.trim()));
-    leverageMin = parts[0] || 3;
-    leverageMax = parts[1] || leverageMin + 2;
-  } else {
-    const single = parseInt(leverageRaw);
-    if (!isNaN(single)) { leverageMin = single; leverageMax = single; }
+  while (true) {
+    const leverageRaw = await ask(conversation, ctx, `<b>Step 5/7</b> — Leverage range? (e.g. <code>3-5</code> or <code>4</code>, max <b>${MAX_LEVERAGE}x</b>)`);
+    if (leverageRaw.includes("-")) {
+      const parts = leverageRaw.split("-").map((s) => parseInt(s.trim()));
+      leverageMin = parts[0] || 3;
+      leverageMax = parts[1] || leverageMin + 2;
+    } else {
+      const single = parseInt(leverageRaw);
+      if (!isNaN(single)) { leverageMin = single; leverageMax = single; }
+    }
+
+    if (
+      Number.isFinite(leverageMin) && Number.isFinite(leverageMax) &&
+      leverageMin >= MIN_LEVERAGE && leverageMax <= MAX_LEVERAGE &&
+      leverageMin <= leverageMax
+    ) {
+      break;
+    }
+    await ctx.reply(`⚠️ Leverage must be between <b>${MIN_LEVERAGE}x</b> and <b>${MAX_LEVERAGE}x</b>, min ≤ max. Try again.`, { parse_mode: "HTML" });
   }
 
   // Step 6: Stop-loss
@@ -88,14 +122,21 @@ export async function onboardingConversation(conversation: Conversation<Context>
   ]);
   let stopLossMethod: StrategyProfile["stopLoss"]["method"] = "support_zone";
   let stopLossPct: number | undefined;
-  if (slMethod.startsWith("support_zone")) { stopLossMethod = "support_zone"; }
-  else if (slMethod.startsWith("percentage")) {
+  if (slMethod.startsWith("support_zone")) {
+    stopLossMethod = "support_zone";
+  } else if (slMethod.startsWith("percentage")) {
     stopLossMethod = "percentage";
-    stopLossPct = parseFloat(await ask(conversation, ctx, `What % from entry? (e.g. <code>2.5</code>)`)) || 2.5;
-  } else { stopLossMethod = "atr"; }
+    stopLossPct = await askNumberInRange(
+      conversation, ctx,
+      `What % from entry? (e.g. <code>2.5</code>, must be between <b>${MIN_STOP_LOSS_PCT}%</b> and <b>${MAX_STOP_LOSS_PCT}%</b>)`,
+      MIN_STOP_LOSS_PCT, MAX_STOP_LOSS_PCT, 2.5
+    );
+  } else {
+    stopLossMethod = "atr";
+  }
 
   // Step 7: Position size
-  const maxPositionUSDC = parseFloat(await ask(conversation, ctx, `<b>Step 7/7</b> — Max collateral per trade in USDC? (e.g. <code>500</code>)`)) || 500;
+  const maxPositionUSDC = await askNumberInRange(conversation, ctx, `<b>Step 7/7</b> — Max collateral per trade in USDC? (e.g. <code>500</code>)`, 1, 1_000_000, 500);
 
   const profile: StrategyProfile = {
     indicators, rsi: { period: rsiPeriod, oversoldThreshold: rsiOversold, overboughtThreshold: rsiOverbought },

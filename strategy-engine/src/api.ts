@@ -1,10 +1,12 @@
 import express from "express";
 import { TradeProposal } from "./proposalBuilder";
+import { addAlert } from "./alerts";
+import { getPositionsForWallet } from "./positionMonitor";
+import { PriceAlert } from "./types";
 
 const app = express();
 app.use(express.json());
 
-// Tracks pending executions — in production this would hit the Rust backend
 const executionLog: Array<{
   proposalId: string;
   decision: string;
@@ -20,7 +22,7 @@ app.post("/execute", (req, res) => {
   };
 
   console.log(`[engine] /execute → ${decision.toUpperCase()} for ${proposalId}`);
-  console.log(`  ${proposal.direction} ${proposal.pair} @ $${proposal.entryPrice} ${proposal.leverage}x`);
+  console.log(`  ${proposal.direction} ${proposal.pair} @ $${proposal.entryPrice} ${proposal.leverage}x (user ${proposal.userId})`);
 
   executionLog.push({ proposalId, decision, at: new Date().toISOString() });
 
@@ -40,12 +42,28 @@ app.post("/close", (req, res) => {
   res.json({ ok: true, positionId });
 });
 
-// ── GET /positions — bot fetches active positions ─────────────────────────────
-app.get("/positions", (_req, res) => {
-  // TODO: call Rust backend get_positions tool
-  // For MVP return empty array — positions come from Avantis via Rust layer
-  console.log(`[engine] /positions requested`);
-  res.json([]);
+// ── GET /positions?wallet=0x... — bot fetches active positions for a user ────
+app.get("/positions", async (req, res) => {
+  const wallet = req.query.wallet as string | undefined;
+  if (!wallet) {
+    res.json([]);
+    return;
+  }
+  console.log(`[engine] /positions requested for ${wallet}`);
+  const positions = await getPositionsForWallet(wallet);
+  res.json(positions);
+});
+
+// ── POST /alerts — bot forwards a user's /alert command here ─────────────────
+app.post("/alerts", (req, res) => {
+  const alert = req.body as PriceAlert;
+  if (!alert.userId || !alert.pair || !alert.direction || !alert.targetPrice) {
+    res.status(422).send("Missing required alert fields");
+    return;
+  }
+  addAlert({ ...alert, createdAt: new Date().toISOString() });
+  console.log(`[engine] Alert stored — user ${alert.userId}: ${alert.pair} ${alert.direction} ${alert.targetPrice}`);
+  res.json({ ok: true });
 });
 
 // ── GET /health ───────────────────────────────────────────────────────────────

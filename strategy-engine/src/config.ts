@@ -1,55 +1,25 @@
-import fs from "fs";
-import path from "path";
+import axios from "axios";
+import { UserProfileBundle, StrategyProfile } from "./types";
 
-export interface StrategyProfile {
-  indicators: string[];
-  rsi: {
-    period: number;
-    oversoldThreshold: number;
-    overboughtThreshold: number;
-  };
-  macd: {
-    signalType: "crossover" | "histogram" | "both";
-  };
-  movingAverages: {
-    periods: number[];
-    condition: "price_above_all" | "price_above_any" | "ma_cross";
-  };
-  leverage: {
-    min: number;
-    max: number;
-  };
-  stopLoss: {
-    method: "support_zone" | "percentage" | "atr";
-    percentage?: number;
-  };
-  maxPositionUSDC: number;
-  updatedAt: string;
-}
+export type { StrategyProfile } from "./types";
 
-const PROFILE_PATH =
-  process.env.STRATEGY_PROFILE_PATH ??
-  path.join(__dirname, "../../Stratex-bot/data/strategy.json");
+// The bot and engine run as separate Railway services with separate
+// filesystems, so profiles can't be read off disk anymore — the engine
+// pulls them fresh from the bot's GET /profiles each poll cycle.
+const BOT_INTERNAL_URL =
+  process.env.BOT_INTERNAL_URL ?? "http://stratex-bot.railway.internal:3001";
 
-export function loadStrategyProfile(): StrategyProfile {
-  if (!fs.existsSync(PROFILE_PATH)) {
-    console.warn(`[config] No strategy profile found at ${PROFILE_PATH}`);
-    console.warn(`[config] Using default profile. Run /setup in the bot to configure.`);
-    return defaultProfile();
-  }
-
+export async function fetchAllUserProfiles(): Promise<UserProfileBundle[]> {
   try {
-    const raw = fs.readFileSync(PROFILE_PATH, "utf-8");
-    const profile = JSON.parse(raw) as StrategyProfile;
-    console.log(`[config] Strategy profile loaded (updated: ${profile.updatedAt})`);
-    return profile;
+    const res = await axios.get(`${BOT_INTERNAL_URL}/profiles`, { timeout: 8_000 });
+    return res.data as UserProfileBundle[];
   } catch (err) {
-    console.error(`[config] Failed to parse strategy profile:`, err);
-    return defaultProfile();
+    console.error(`[config] Failed to fetch profiles from bot (${BOT_INTERNAL_URL}):`, (err as Error).message);
+    return [];
   }
 }
 
-function defaultProfile(): StrategyProfile {
+export function defaultProfile(): StrategyProfile {
   return {
     indicators: ["RSI", "MACD", "MA"],
     rsi: { period: 14, oversoldThreshold: 30, overboughtThreshold: 70 },

@@ -27,22 +27,25 @@ export interface StrategyProfile {
   updatedAt: string;
 }
 
-// ─── Multi-user store ─────────────────────────────────────────────────────────
+// ─── Multi-user profile store ─────────────────────────────────────────────────
 
 const STORE_DIR = process.env.STRATEGY_STORE_PATH ?? "./data/profiles";
+const WALLET_DIR = process.env.WALLET_STORE_PATH ?? "./data/wallets";
 
-function ensureDir(): void {
-  if (!fs.existsSync(STORE_DIR)) {
-    fs.mkdirSync(STORE_DIR, { recursive: true });
-  }
+function ensureDir(dir: string): void {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 function profilePath(userId: number): string {
   return path.join(STORE_DIR, `${userId}.json`);
 }
 
+function walletPath(userId: number): string {
+  return path.join(WALLET_DIR, `${userId}.txt`);
+}
+
 export function saveProfile(userId: number, profile: StrategyProfile): void {
-  ensureDir();
+  ensureDir(STORE_DIR);
   fs.writeFileSync(profilePath(userId), JSON.stringify(profile, null, 2), "utf-8");
 }
 
@@ -63,6 +66,34 @@ export function hasProfile(userId: number): boolean {
 export function deleteProfile(userId: number): void {
   const p = profilePath(userId);
   if (fs.existsSync(p)) fs.unlinkSync(p);
+}
+
+/** Every userId that currently has a saved strategy profile. Used by the
+ *  engine (via GET /profiles) to know who to evaluate signals for. */
+export function listUserIds(): number[] {
+  ensureDir(STORE_DIR);
+  return fs
+    .readdirSync(STORE_DIR)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => parseInt(f.replace(".json", ""), 10))
+    .filter((n) => !isNaN(n));
+}
+
+// ─── Wallet address (needed for position monitoring / liquidation checks) ────
+
+export function saveWallet(userId: number, address: string): void {
+  ensureDir(WALLET_DIR);
+  fs.writeFileSync(walletPath(userId), address.trim(), "utf-8");
+}
+
+export function loadWallet(userId: number): string | null {
+  try {
+    const p = walletPath(userId);
+    if (!fs.existsSync(p)) return null;
+    return fs.readFileSync(p, "utf-8").trim();
+  } catch {
+    return null;
+  }
 }
 
 export function formatProfile(p: StrategyProfile): string {

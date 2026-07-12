@@ -2,12 +2,16 @@ import { randomUUID } from "crypto";
 import axios from "axios";
 import { ConfluenceResult, SizedPosition, SimulationResult } from "./types";
 
-const BOT_PORT = process.env.BOT_PROPOSAL_PORT ?? "3001";
-const BOT_URL = `http://stratex.railway.internal:${BOT_PORT}/proposal`;
-
+// Was hardcoded to "stratex.railway.internal" — only resolved if the bot's
+// Railway service was literally named "stratex". Now configurable via env so
+// it matches whatever the bot service is actually named on Railway.
+const BOT_INTERNAL_URL =
+  process.env.BOT_INTERNAL_URL ?? "http://stratex-bot.railway.internal:3001";
+const BOT_PROPOSAL_URL = `${BOT_INTERNAL_URL}/proposal`;
 
 export interface TradeProposal {
   id: string;
+  userId: number;
   pair: string;
   direction: "LONG" | "SHORT";
   entryPrice: number;
@@ -24,6 +28,7 @@ export interface TradeProposal {
 }
 
 export function buildProposal(
+  userId: number,
   pair: string,
   confluence: ConfluenceResult,
   position: SizedPosition,
@@ -31,6 +36,7 @@ export function buildProposal(
 ): TradeProposal {
   return {
     id: randomUUID(),
+    userId,
     pair,
     direction: position.direction,
     entryPrice: position.entryPrice,
@@ -49,11 +55,11 @@ export function buildProposal(
 
 export async function sendProposalToBot(proposal: TradeProposal): Promise<void> {
   try {
-    const res = await axios.post(BOT_URL, proposal, {
+    const res = await axios.post(BOT_PROPOSAL_URL, proposal, {
       timeout: 5_000,
       headers: { "Content-Type": "application/json" },
     });
-    console.log(`[engine] Proposal ${proposal.id} sent to bot → ${res.status}`);
+    console.log(`[engine] Proposal ${proposal.id} sent to user ${proposal.userId} → ${res.status}`);
   } catch (err) {
     console.error(`[engine] Failed to send proposal to bot:`, err);
     throw err;

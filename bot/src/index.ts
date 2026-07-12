@@ -9,8 +9,9 @@ import {
 
 import { onboardingConversation } from "./onboarding";
 import { registerHandlers, sendProposal, isAuthorized } from "./handlers";
-import { formatLiquidationWarning, closePositionKeyboard } from "./proposal";
-import { TradeProposal, ActivePosition } from "./types";
+import { formatLiquidationWarning, closePositionKeyboard, formatAlertTriggered } from "./proposal";
+import { listUserIds, loadProfile, loadWallet } from "./store";
+import { TradeProposal, ActivePosition, TriggeredAlert } from "./types";
 
 // ─── Session + Context types ──────────────────────────────────────────────────
 
@@ -31,8 +32,6 @@ const bot = new Bot<BotContext>(token);
 
 bot.use(session({ initial: (): SessionData => ({}) }));
 bot.use(conversations());
-
-// Register the onboarding wizard as a named conversation
 bot.use(createConversation(onboardingConversation, "onboarding"));
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -48,33 +47,44 @@ bot.command("cancel", async (ctx) => {
   await ctx.reply("Cancelled.");
 });
 
-// Register all other handlers (start, strategy, positions, callbacks)
 registerHandlers(bot as unknown as Bot<Context>);
-
-// ── Error handler ─────────────────────────────────────────────────────────────
 
 bot.catch((err) => {
   console.error("[stratex bot error]", err.message, err.ctx?.update);
 });
 
-// ─── HTTP server — receives proposals from the strategy engine ────────────────
+// ─── HTTP server ────────────────────────────────────────────────────────────
 //
-// The Node.js strategy engine POSTs to this server when it detects a signal.
-// Two endpoints:
-//   POST /proposal      → push a trade proposal card to the user
-//   POST /liquidation   → push a liquidation warning to the user
+// Endpoints consumed by the strategy engine:
+//   GET  /profiles       → every user's strategy profile + wallet (engine pulls this each poll cycle)
+//   POST /proposal       → push a trade proposal to a specific user (body includes userId)
+//   POST /liquidation    → push a liquidation warning to a specific user (body includes userId)
+//   POST /alert-triggered→ push a price alert notification to a specific user
 
 const PROPOSAL_PORT = parseInt(process.env.PROPOSAL_PORT ?? "3001");
-const AUTHORIZED_CHAT_ID = parseInt(process.env.AUTHORIZED_USER_ID ?? "0");
 
 const httpServer = http.createServer(async (req, res) => {
+  // ── GET /profiles ───────────────────────────────────────────────────────────
+  if (req.method === "GET" && req.url === "/profiles") {
+    const bundles = listUserIds()
+      .map((userId) => ({
+        userId,
+        profile: loadProfile(userId),
+        walletAddress: loadWallet(userId),
+      }))
+      .filter((b) => b.profile !== null);
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(bundles));
+    return;
+  }
+
   if (req.method !== "POST") {
     res.writeHead(405);
     res.end("Method not allowed");
     return;
   }
 
-  // Read body
   const body = await readBody(req);
 
   let parsed: unknown;
@@ -90,24 +100,15 @@ const httpServer = http.createServer(async (req, res) => {
   if (req.url === "/proposal") {
     const proposal = parsed as TradeProposal;
 
-    if (!proposal.id || !proposal.pair || !proposal.direction) {
+    if (!proposal.id || !proposal.userId || !proposal.pair || !proposal.direction) {
       res.writeHead(422);
-      res.end("Missing required proposal fields");
-      return;
-    }
-
-    if (AUTHORIZED_CHAT_ID === 0) {
-      console.warn(
-        "[stratex] AUTHORIZED_USER_ID not set — cannot push proposal. Set it in .env"
-      );
-      res.writeHead(500);
-      res.end("AUTHORIZED_USER_ID not configured");
+      res.end("Missing required proposal fields (id, userId, pair, direction)");
       return;
     }
 
     try {
-      await sendProposal(bot as unknown as Bot<Context>, AUTHORIZED_CHAT_ID, proposal);
-      console.log(`[stratex] Proposal ${proposal.id} pushed to Telegram`);
+      await sendProposal(bot as unknown as Bot<Context>, proposal.userId, proposal);
+      console.log(`[stratex] Proposal ${proposal.id} pushed to user ${proposal.userId}`);
       res.writeHead(200);
       res.end("ok");
     } catch (err) {
@@ -122,32 +123,49 @@ const httpServer = http.createServer(async (req, res) => {
   if (req.url === "/liquidation") {
     const position = parsed as ActivePosition;
 
-    if (!position.positionId || !position.pair) {
+    if (!position.userId || !position.positionId || !position.pair) {
       res.writeHead(422);
-      res.end("Missing required position fields");
-      return;
-    }
-
-    if (AUTHORIZED_CHAT_ID === 0) {
-      res.writeHead(500);
-      res.end("AUTHORIZED_USER_ID not configured");
+      res.end("Missing required position fields (userId, positionId, pair)");
       return;
     }
 
     try {
       await bot.api.sendMessage(
-        AUTHORIZED_CHAT_ID,
+        position.userId,
         formatLiquidationWarning(position),
         {
           parse_mode: "HTML",
           reply_markup: closePositionKeyboard(position.positionId),
         }
       );
-      console.log(`[stratex] Liquidation warning sent for ${position.positionId}`);
+      console.log(`[stratex] Liquidation warning sent to ${position.userId} for ${position.positionId}`);
       res.writeHead(200);
       res.end("ok");
     } catch (err) {
       console.error("[stratex] Failed to send liquidation warning:", err);
+      res.writeHead(500);
+      res.end("Failed to send");
+    }
+    return;
+  }
+
+  // ── POST /alert-triggered ─────────────────────────────────────────────────
+  if (req.url === "/alert-triggered") {
+    const alert = parsed as TriggeredAlert;
+
+    if (!alert.userId || !alert.pair) {
+      res.writeHead(422);
+      res.end("Missing required alert fields (userId, pair)");
+      return;
+    }
+
+    try {
+      await bot.api.sendMessage(alert.userId, formatAlertTriggered(alert), { parse_mode: "HTML" });
+      console.log(`[stratex] Alert triggered for user ${alert.userId}: ${alert.pair} ${alert.direction} ${alert.targetPrice}`);
+      res.writeHead(200);
+      res.end("ok");
+    } catch (err) {
+      console.error("[stratex] Failed to send alert notification:", err);
       res.writeHead(500);
       res.end("Failed to send");
     }
@@ -168,7 +186,6 @@ const httpServer = http.createServer(async (req, res) => {
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // Start the HTTP server first
   await new Promise<void>((resolve) => {
     httpServer.listen(PROPOSAL_PORT, () => {
       console.log(`[stratex] Proposal listener running on port ${PROPOSAL_PORT}`);
@@ -176,21 +193,21 @@ async function main(): Promise<void> {
     });
   });
 
-  // Set bot commands so they show up in the Telegram UI
   await bot.api.setMyCommands([
     { command: "start",    description: "Welcome and status" },
     { command: "setup",    description: "Onboard or update your TA strategy" },
     { command: "strategy", description: "View your current strategy profile" },
+    { command: "wallet",   description: "Link your wallet for position monitoring" },
+    { command: "alert",    description: "Set a price alert" },
     { command: "positions",description: "View your open Avantis positions" },
     { command: "cancel",   description: "Cancel the current wizard" },
     { command: "help",     description: "Show all commands" },
   ]);
 
-  // Start polling
   await bot.start({
     onStart: (info) => {
       console.log(`[stratex] Bot running as @${info.username}`);
-      console.log(`[stratex] Authorized user ID: ${AUTHORIZED_CHAT_ID || "OPEN (dev mode)"}`);
+      console.log(`[stratex] Multi-user mode — profiles served at GET /profiles`);
     },
   });
 }

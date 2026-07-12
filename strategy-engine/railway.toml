@@ -1,8 +1,16 @@
 [build]
-builder = "nixpacks"
+builder = "NIXPACKS"
 buildCommand = "npm install && npm run build"
 
 [deploy]
 startCommand = "node dist/index.js"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+# Required env vars (set in Railway dashboard, not here):
+#   ENGINE_PORT=3000
+#   BOT_INTERNAL_URL=http://stratex-bot.railway.internal:3001   <- match your bot service's actual Railway name
+#   POLL_INTERVAL_MS=60000
+#   TRADING_PAIRS=BTCUSDT,ETHUSDT,SOLUSDT
+#   CANDLE_INTERVAL=1h
+#   CANDLE_LIMIT=200

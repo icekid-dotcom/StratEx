@@ -2,23 +2,27 @@ import { Candle, SizedPosition, SimulationResult } from "./types";
 import { StrategyProfile } from "./config";
 import { calcSupportResistance } from "./indicators";
 
+const MAX_LEVERAGE = 100;
+const MIN_LEVERAGE = 1;
+const MIN_STOP_LOSS_PCT = 0.1;
+const MAX_STOP_LOSS_PCT = 20;
+
 export function sizePosition(
   candles: Candle[],
   direction: "LONG" | "SHORT",
   profile: StrategyProfile,
-  confluenceScore: number,  // passed checks out of total
+  confluenceScore: number,
   totalChecks: number
 ): SizedPosition {
   const entryPrice = candles[candles.length - 1].close;
   const sr = calcSupportResistance(candles);
 
-  // ── Leverage: scale within range based on confluence score ─────────────────
+  // ── Leverage: scale within range based on confluence score, clamped ────────
   const ratio = confluenceScore / totalChecks;
-  const leverage = Math.round(
-    profile.leverage.min + ratio * (profile.leverage.max - profile.leverage.min)
-  );
+  const safeLevMin = clamp(profile.leverage.min, MIN_LEVERAGE, MAX_LEVERAGE);
+  const safeLevMax = clamp(profile.leverage.max, MIN_LEVERAGE, MAX_LEVERAGE);
+  const leverage = Math.round(safeLevMin + ratio * (Math.max(safeLevMax, safeLevMin) - safeLevMin));
 
-  // ── Collateral: use max position size from profile ─────────────────────────
   const collateralUSDC = profile.maxPositionUSDC;
   const notionalUSDC = collateralUSDC * leverage;
 
@@ -28,21 +32,26 @@ export function sizePosition(
 
   if (profile.stopLoss.method === "support_zone") {
     if (direction === "LONG") {
-      // SL just below nearest support
       stopLossPrice = sr.nearestSupport * 0.995;
     } else {
-      // SL just above nearest resistance
       stopLossPrice = sr.nearestResistance * 1.005;
     }
     stopLossPct = Math.abs((entryPrice - stopLossPrice) / entryPrice) * 100;
+    // Support/resistance can occasionally hand back a degenerate zero or a
+    // wildly wide gap — clamp so a bad S/R read can't produce a $0 stop.
+    if (!Number.isFinite(stopLossPct) || stopLossPct < MIN_STOP_LOSS_PCT || stopLossPct > MAX_STOP_LOSS_PCT) {
+      stopLossPct = clamp(stopLossPct, MIN_STOP_LOSS_PCT, MAX_STOP_LOSS_PCT);
+      stopLossPrice = direction === "LONG"
+        ? entryPrice * (1 - stopLossPct / 100)
+        : entryPrice * (1 + stopLossPct / 100);
+    }
   } else if (profile.stopLoss.method === "percentage") {
-    stopLossPct = profile.stopLoss.percentage ?? 2.5;
+    stopLossPct = clamp(profile.stopLoss.percentage ?? 2.5, MIN_STOP_LOSS_PCT, MAX_STOP_LOSS_PCT);
     stopLossPrice =
       direction === "LONG"
         ? entryPrice * (1 - stopLossPct / 100)
         : entryPrice * (1 + stopLossPct / 100);
   } else {
-    // ATR — use 2% as fallback for MVP
     stopLossPct = 2.0;
     stopLossPrice =
       direction === "LONG"
@@ -50,7 +59,6 @@ export function sizePosition(
         : entryPrice * 1.02;
   }
 
-  // ── Take-profit: 2× the SL distance (2:1 RR minimum) ─────────────────────
   const takeProfitPct = stopLossPct * 2;
   const takeProfitPrice =
     direction === "LONG"
@@ -70,10 +78,6 @@ export function sizePosition(
   };
 }
 
-/**
- * Mock simulation output for MVP.
- * The real simulation runs through the Anvil fork in the Rust backend.
- */
 export function simulatePosition(pos: SizedPosition): SimulationResult {
   const { collateralUSDC, leverage, stopLossPct, takeProfitPct } = pos;
 
@@ -84,7 +88,6 @@ export function simulatePosition(pos: SizedPosition): SimulationResult {
     (collateralUSDC * leverage * (stopLossPct / 100)).toFixed(2)
   );
 
-  // Liquidation price: ~90% margin usage (simplified)
   const liqPct = (0.9 / leverage) * 100;
   const liquidationPrice =
     pos.direction === "LONG"
@@ -98,4 +101,9 @@ export function simulatePosition(pos: SizedPosition): SimulationResult {
     funding8h: parseFloat((collateralUSDC * 0.0003).toFixed(4)),
     gasEstimateUSD: 0.004,
   };
+}
+
+function clamp(n: number, min: number, max: number): number {
+  if (!Number.isFinite(n)) return min;
+  return Math.min(Math.max(n, min), max);
 }

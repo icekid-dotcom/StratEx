@@ -1,15 +1,17 @@
 import { Bot, Context, InlineKeyboard } from "grammy";
-import { loadProfile, formatProfile, hasProfile } from "./store";
+import { loadProfile, formatProfile, hasProfile, saveWallet, loadWallet } from "./store";
 import { formatProposalCard, proposalKeyboard, formatPositionsList } from "./proposal";
-import { TradeProposal, ActivePosition } from "./types";
+import { TradeProposal, ActivePosition, PriceAlert } from "./types";
 
 export const pendingProposals = new Map<string, TradeProposal>();
 export const proposalHistory: Array<{ id: string; decision: "approved" | "rejected"; at: string }> = [];
 
-// No auth restriction — open to all users
+// Open to all users — each gets their own strategy profile via /setup.
 export function isAuthorized(_ctx: Context): boolean {
   return true;
 }
+
+const ENGINE_BASE = `http://${process.env.ENGINE_INTERNAL_HOST ?? "localhost"}:${process.env.STRATEGY_ENGINE_PORT ?? "3000"}`;
 
 export function registerHandlers(bot: Bot<Context>): void {
 
@@ -31,6 +33,8 @@ export function registerHandlers(bot: Bot<Context>): void {
         `<b>Commands</b>`,
         `/setup — onboard or update your strategy`,
         `/strategy — view your current strategy profile`,
+        `/wallet — link your wallet address for position monitoring`,
+        `/alert — set a price alert (e.g. /alert BTC-USD above 65000)`,
         `/positions — view open positions`,
         `/help — command list`,
       ].join("\n"),
@@ -45,6 +49,9 @@ export function registerHandlers(bot: Bot<Context>): void {
         ``,
         `/setup — run the strategy onboarding wizard`,
         `/strategy — view your saved strategy profile`,
+        `/wallet 0xYourAddress — link your wallet for liquidation monitoring`,
+        `/alert PAIR above|below PRICE — get pinged when price crosses a level`,
+        `  e.g. <code>/alert BTC-USD above 65000</code>`,
         `/positions — list your active Avantis positions`,
         `/cancel — cancel the current wizard`,
         ``,
@@ -65,10 +72,85 @@ export function registerHandlers(bot: Bot<Context>): void {
     await ctx.reply(formatProfile(profile), { parse_mode: "HTML" });
   });
 
+  // ── /wallet — link a wallet address for position/liquidation monitoring ────
+  bot.command("wallet", async (ctx) => {
+    const userId = ctx.from?.id ?? 0;
+    const arg = ctx.match?.toString().trim();
+
+    if (!arg) {
+      const current = loadWallet(userId);
+      await ctx.reply(
+        current
+          ? `Your linked wallet: <code>${current}</code>\n\nSend <code>/wallet 0xNewAddress</code> to update it.`
+          : `No wallet linked yet. Send <code>/wallet 0xYourAddress</code> to link one.`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    if (!/^0x[a-fA-F0-9]{40}$/.test(arg)) {
+      await ctx.reply(`⚠️ That doesn't look like a valid EVM address. Expected format: <code>0x...</code> (42 chars).`, { parse_mode: "HTML" });
+      return;
+    }
+
+    saveWallet(userId, arg);
+    await ctx.reply(`✅ Wallet linked: <code>${arg}</code>\n\nStratex will now monitor this address for open Avantis positions and warn you before liquidation.`, { parse_mode: "HTML" });
+  });
+
+  // ── /alert — set a one-shot price alert, forwarded to the strategy engine ──
+  bot.command("alert", async (ctx) => {
+    const userId = ctx.from?.id ?? 0;
+    const raw = ctx.match?.toString().trim() ?? "";
+    const parts = raw.split(/\s+/);
+
+    if (parts.length !== 3 || !["above", "below"].includes(parts[1].toLowerCase())) {
+      await ctx.reply(
+        `Usage: <code>/alert PAIR above|below PRICE</code>\ne.g. <code>/alert BTC-USD above 65000</code>`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    const [pairRaw, dirRaw, priceRaw] = parts;
+    const pair = pairRaw.toUpperCase();
+    const direction = dirRaw.toLowerCase() as "above" | "below";
+    const targetPrice = parseFloat(priceRaw);
+
+    if (isNaN(targetPrice) || targetPrice <= 0) {
+      await ctx.reply(`⚠️ Invalid price: <code>${priceRaw}</code>`, { parse_mode: "HTML" });
+      return;
+    }
+
+    const alert: PriceAlert = { userId, pair, direction, targetPrice };
+
+    try {
+      const res = await fetch(`${ENGINE_BASE}/alerts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(alert),
+      });
+      if (!res.ok) throw new Error(`Engine returned ${res.status}`);
+      await ctx.reply(
+        `🔔 Alert set: <b>${pair}</b> ${direction} <b>$${targetPrice.toLocaleString()}</b>. I'll ping you when it crosses.`,
+        { parse_mode: "HTML" }
+      );
+    } catch (err) {
+      await ctx.reply(`⚠️ Could not reach the strategy engine to set the alert.\n\n<code>${err}</code>`, { parse_mode: "HTML" });
+    }
+  });
+
   bot.command("positions", async (ctx) => {
+    const userId = ctx.from?.id ?? 0;
+    const wallet = loadWallet(userId);
+
+    if (!wallet) {
+      await ctx.reply(`No wallet linked. Run <code>/wallet 0xYourAddress</code> first.`, { parse_mode: "HTML" });
+      return;
+    }
+
     await ctx.reply(`⏳ Fetching your open positions from Avantis...`);
     try {
-      const positions = await fetchPositions();
+      const positions = await fetchPositions(wallet);
       await ctx.reply(formatPositionsList(positions), { parse_mode: "HTML" });
     } catch (err) {
       await ctx.reply(
@@ -150,10 +232,8 @@ export async function sendProposal(
   });
 }
 
-const ENGINE_BASE = `http://localhost:${process.env.STRATEGY_ENGINE_PORT ?? "3000"}`;
-
-async function fetchPositions(): Promise<ActivePosition[]> {
-  const res = await fetch(`${ENGINE_BASE}/positions`);
+async function fetchPositions(wallet: string): Promise<ActivePosition[]> {
+  const res = await fetch(`${ENGINE_BASE}/positions?wallet=${wallet}`);
   if (!res.ok) throw new Error(`Engine returned ${res.status}`);
   return res.json() as Promise<ActivePosition[]>;
 }
