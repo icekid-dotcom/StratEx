@@ -25,10 +25,16 @@ const TRADING_PAIRS = (process.env.TRADING_PAIRS ?? "BTCUSDT,ETHUSDT,SOLUSDT")
 // Cooldown is now per (userId, pair) — one user firing a signal shouldn't
 // block another user's proposal on the same pair.
 const PROPOSAL_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 hours
-const COOLDOWN_FILE = path.join(__dirname, "../cooldown.json");
+const DATA_DIR = process.env.DATA_DIR ?? path.join(__dirname, "../data");
+const COOLDOWN_FILE = path.join(DATA_DIR, "cooldown.json");
+
+function ensureDataDir(): void {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 function loadCooldowns(): Record<string, number> {
   try {
+    ensureDataDir();
     if (!fs.existsSync(COOLDOWN_FILE)) return {};
     return JSON.parse(fs.readFileSync(COOLDOWN_FILE, "utf-8"));
   } catch {
@@ -38,6 +44,7 @@ function loadCooldowns(): Record<string, number> {
 
 function saveCooldowns(cooldowns: Record<string, number>): void {
   try {
+    ensureDataDir();
     fs.writeFileSync(COOLDOWN_FILE, JSON.stringify(cooldowns), "utf-8");
   } catch {
     console.warn("[engine] Could not persist cooldown timestamps.");

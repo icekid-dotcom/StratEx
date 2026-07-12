@@ -3,12 +3,18 @@ import path from "path";
 import axios from "axios";
 import { PriceAlert } from "./types";
 
-const ALERTS_FILE = path.join(__dirname, "../alerts.json");
+const DATA_DIR = process.env.DATA_DIR ?? path.join(__dirname, "../data");
+const ALERTS_FILE = path.join(DATA_DIR, "alerts.json");
 const BOT_INTERNAL_URL =
   process.env.BOT_INTERNAL_URL ?? "http://stratex-bot.railway.internal:3001";
 
+function ensureDataDir(): void {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
 function loadAlerts(): PriceAlert[] {
   try {
+    ensureDataDir();
     if (!fs.existsSync(ALERTS_FILE)) return [];
     return JSON.parse(fs.readFileSync(ALERTS_FILE, "utf-8")) as PriceAlert[];
   } catch {
@@ -18,6 +24,7 @@ function loadAlerts(): PriceAlert[] {
 
 function saveAlerts(alerts: PriceAlert[]): void {
   try {
+    ensureDataDir();
     fs.writeFileSync(ALERTS_FILE, JSON.stringify(alerts, null, 2), "utf-8");
   } catch {
     console.warn("[alerts] Could not persist alerts.json");
