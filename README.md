@@ -1,204 +1,90 @@
-# ⚡ StratEx — Personal Alpha Engine
+# StratEx
 
-> Strategy-Driven Agentic Perpetuals Trading Infrastructure for Base
+**Personal alpha engine for Avantis perpetuals on Base — delivered through Telegram.**
 
-**Track:** Avantis (Priority Protocol 4) — OpenPandora Early Forge Hackathon
+StratEx watches BTC, ETH, and SOL for technical confluence (RSI, MACD, moving averages, support/resistance) against *your own* trading strategy, sizes a position when your setup fires, and sends you a trade proposal on Telegram. You approve or reject — your keys never leave your device.
 
----
+Built for the OpenPandora Early Forge Hackathon.
 
-## What It Does
+## What it does
 
-StratEx encodes a human trader's TA methodology into an autonomous agent that monitors markets 24/7, detects high-conviction setups, and proposes trades via Telegram — without ever touching the user's private keys.
-
-A skilled perp trader has an edge. Sleep, work, and cognitive fatigue erode it. StratEx fixes that.
-
----
-
-## How It Works
-
-**1. Onboard your strategy once**
-
-```
-Bot: "What indicators do you use for entries?"
-User: "RSI below 25, MACD crossover, price above 200MA"
-
-Bot: "What's your leverage range?"
-User: "5x to 10x"
-
-Bot: "How do you size stops?"
-User: "Below nearest support zone"
-```
-
-The agent stores this as a structured strategy profile and applies it on every signal evaluation.
-
-**2. Agent monitors markets around the clock**
-
-The strategy engine polls BTC, ETH, and SOL on 1h candles, computing:
-- RSI (configurable period + thresholds)
-- MACD (crossover, histogram, or both)
-- Moving average confluence (50MA / 200MA)
-- Support & resistance zone detection
-
-**3. Signal detected → proposal delivered**
-
-When confluence conditions align, the agent sizes the position, runs a simulation, and fires a trade proposal card to Telegram:
-
-```
-🟢 TRADE PROPOSAL — SOL-USD
-
-Direction:   LONG
-Entry:       $84.13
-Leverage:    40x
-Collateral:  $120 USDC
-
-Stop-Loss:   $83.49  (0.8% from entry)
-Take-Profit: $85.41  (1.5% upside)
-
-📊 Simulation (Anvil fork)
-Est. PnL @ TP:  +$57.60
-Est. PnL @ SL:  -$28.80
-Liquidation:    $82.00
-
-🔍 Signal Confluence
-✅ RSI(14): 41.82 — neutral zone
-✅ MACD: bearish histogram
-✅ MA (price above all): 55MA@85.41, 210MA@84.13
-✅ S/R Zone: demand zone $83.49–$84.33
-
-[✅ APPROVE]  [❌ REJECT]
-```
-
-**4. User taps Approve — trade executes on Avantis**
-
-The Aomi agent layer calls the Avantis perpetuals API on Base, submits the unsigned transaction to the user's wallet (wagmi/Para), and executes. Private keys never leave the device.
-
----
+- **Multi-user strategy profiles** — every Telegram user runs `/setup` and gets their own indicator thresholds, leverage range, stop-loss method, and position size. One bot, many independent traders.
+- **Signal detection** — polls BTC/ETH/SOL candles hourly, scores confluence across up to 4 indicators per user's configured strategy, fires a proposal only when your specific thresholds are met.
+- **Trade proposals with simulation** — every proposal shows entry, leverage, stop-loss, take-profit, liquidation price, estimated PnL, and funding cost before you approve anything.
+- **`/alert`** — set a one-shot price alert (`/alert BTC-USD above 65000`) and get pinged when it crosses, independent of your strategy signals.
+- **Position monitoring** — link a wallet with `/wallet 0x...` and get a liquidation warning if any open Avantis position's margin ratio drops below 15%.
+- **Non-custodial by design** — the Rust/Aomi backend builds unsigned transaction payloads only. Nothing here ever holds a private key.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│         Telegram Bot (bot/)         │
-│  Strategy onboarding, proposal      │
-│  cards, approve/reject, alerts      │
-└──────────────┬──────────────────────┘
-               │ HTTP (proposals)
-┌──────────────▼──────────────────────┐
-│    Strategy Engine (strategy-engine/)│
-│  CoinGecko OHLCV → RSI/MACD/MA/S&R  │
-│  Confluence eval → Position sizing  │
-│  Polls BTC, ETH, SOL every 60s      │
-└──────────────┬──────────────────────┘
-               │ /execute signal
-┌──────────────▼──────────────────────┐
-│    Rust Backend (backend/)          │
-│  Aomi plugin (.cdylib)              │
-│  5 Avantis tools:                   │
-│  get_funding_rates                  │
-│  get_market_depth                   │
-│  open_position                      │
-│  get_positions                      │
-│  exit_position                      │
-└──────────────┬──────────────────────┘
-               │
-┌──────────────▼──────────────────────┐
-│  Avantis Perps DEX — Base Mainnet   │
-│  User wallet signs — no custody     │
-└─────────────────────────────────────┘
+┌─────────────┐   GET /profiles    ┌──────────────────┐
+│     bot     │◄───────────────────│  strategy-engine  │
+│  (Telegram, │                    │ (polls prices,    │
+│  Node/TS)   │───POST /proposal──►│  scores signals,  │
+│             │───POST /liquidation►  sizes positions) │
+│             │───POST /alert-     │                    │
+│             │    triggered───────►                    │
+└─────────────┘                    └──────────────────┘
+       │                                     │
+       │ unsigned tx payloads                │ REST calls
+       ▼                                     ▼
+┌─────────────┐                    ┌──────────────────┐
+│stratex-backend│                  │   Avantis API /   │
+│ (Rust, Aomi   │                  │   CoinGecko        │
+│  SDK plugin)  │                  └──────────────────┘
+└─────────────┘
 ```
 
----
+Bot and engine run as **separate services** (currently on Railway) with separate filesystems. They talk to each other over HTTP using each other's internal hostname — the engine has no direct database access to the bot's saved profiles, it pulls them fresh via `GET /profiles` every poll cycle.
 
-## Tech Stack
-
-| Layer | Tech |
-|---|---|
-| Telegram bot | Node.js + TypeScript (grammY) |
-| Strategy engine | Node.js + TypeScript |
-| Price data | CoinGecko public API |
-| Rust backend | Rust → `.cdylib` (Aomi SDK) |
-| On-chain | Avantis perpetuals DEX on Base |
-| Wallet | wagmi / Para (user-side, no custody) |
-| Simulation | Anvil local fork of Base |
-
----
-
-## Monorepo Structure
+## Repo structure
 
 ```
-stratex/
-├── bot/                  # Telegram frontend
-│   └── src/
-│       ├── index.ts      # Bot entry point + HTTP proposal listener
-│       ├── onboarding.ts # Strategy capture wizard
-│       ├── handlers.ts   # Commands + callback queries
-│       ├── proposal.ts   # Trade card formatter
-│       ├── store.ts      # Strategy profile persistence
-│       └── types.ts      # Shared types
-│
-├── strategy-engine/      # Indicator + signal engine
-│   └── src/
-│       ├── index.ts      # Main polling loop (BTC/ETH/SOL)
-│       ├── indicators.ts # RSI, MACD, EMA/SMA, S&R
-│       ├── confluence.ts # Signal evaluation
-│       ├── positionSizer.ts
-│       ├── proposalBuilder.ts
-│       ├── priceData.ts  # CoinGecko OHLCV
-│       └── config.ts     # Strategy profile loader
-│
-└── backend/              # Rust Aomi plugin
-    └── src/
-        ├── lib.rs        # Plugin entry point
-        ├── tools.rs      # 5 Avantis tool implementations
-        ├── avantis.rs    # Avantis API client
-        └── types.rs      # Typed structs
+bot/                  Telegram frontend (grammY)
+  src/
+    index.ts          HTTP server + bot bootstrap
+    handlers.ts        Telegram commands
+    onboarding.ts       /setup wizard
+    store.ts            Per-user profile + wallet storage
+    proposal.ts          Message formatters
+    types.ts
+
+strategy-engine/       Signal detection + position sizing (Node/TS)
+  src/
+    index.ts            Poll loop, multi-user orchestration
+    confluence.ts         Indicator scoring
+    indicators.ts          RSI / MACD / MA / S-R math
+    positionSizer.ts        Leverage + stop-loss sizing (clamped)
+    positionMonitor.ts       Liquidation checks
+    alerts.ts                 Price alert storage + firing
+    priceData.ts               CoinGecko candle fetching
+    config.ts                   Pulls user profiles from bot
+    api.ts                       Express endpoints
+    proposalBuilder.ts
+
+backend/                Rust/Aomi SDK plugin — builds unsigned Avantis tx payloads
+  src/
+    lib.rs               Tool registration
+    avantis.rs             Avantis REST client
+    tools.rs                 5 exposed tools
+    types.rs
 ```
 
----
+## Quick start
 
-## Running Locally
+See [HOWTO.md](./HOWTO.md) for local setup and deployment.
+See [USER-MANUAL.md](./USER-MANUAL.md) for the full Telegram command reference.
 
-**Requirements:** Node.js 18+, Git
+## Tech stack
 
-**1. Bot**
-```bash
-cd bot
-cp .env.example .env
-# Add BOT_TOKEN and AUTHORIZED_USER_ID
-npm install
-npm run dev
-```
+Telegram bot: grammY, Node.js, TypeScript
+Strategy engine: Node.js, TypeScript, Express, Axios, CoinGecko public API
+Backend: Rust, Aomi SDK, Avantis REST API
+Chain: Base (Avantis perpetuals)
+Hosting: Railway (two services, persistent volumes for profile/cooldown storage)
 
-**2. Strategy Engine**
-```bash
-cd strategy-engine
-cp .env.example .env
-npm install
-npm run dev
-```
+## Safety notes
 
-**3. Rust Backend** (requires Rust + Aomi SDK)
-```bash
-cd backend
-cargo build --release
-```
-
----
-
-## Key Design Decisions
-
-**No custody.** The agent never holds or signs with user funds. Every position payload is delivered unsigned to the user's local wallet.
-
-**Strategy-first.** The agent learns the trader's method, not a generic algorithm. RSI thresholds, MA periods, leverage ranges, stop sizing — all configurable per user.
-
-**Simulation before execution.** Every proposal runs through an Anvil fork of Base before reaching the user, validating PnL, liquidation price, gas, and slippage.
-
-**Cooldown per pair.** Each trading pair has an independent 4-hour cooldown to prevent signal spam across BTC, ETH, and SOL.
-
----
-
-## References
-
-- [Aomi SDK](https://github.com/aomi-labs/aomi-sdk)
-- [Aomi Docs](https://aomi.dev/docs/build/overview)
-- [Avantis](https://avantisfi.com)
+- Leverage is clamped to 1–100x and stop-loss to 0.1–20% both at onboarding time and again in the engine's position sizer, so a malformed or stale profile can never produce a nonsensical trade proposal.
+- The bot token should be rotated if it's ever exposed in a chat log, doc, or commit — treat it like a password.
